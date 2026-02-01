@@ -1,0 +1,57 @@
+# --------------------
+# Virtual Environment
+# --------------------
+venv/
+.venv/
+env/
+ENV/
+pyvenv.cfg
+
+# --------------------
+# Python Cache / Build
+# --------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+
+# --------------------
+# VS Code / IDE
+# --------------------
+.vscode/
+.idea/
+
+# --------------------
+# Logs & Temp
+# --------------------
+*.log
+*.tmp
+
+# --------------------
+# OS Files
+# --------------------
+.DS_Store
+Thumbs.db
+
+# --------------------
+# AWS Credentials (CRITICAL)
+# --------------------
+.aws/
+credentials
+config
+
+# --------------------
+# Environment Variables
+# --------------------
+.env
+.env.*
+
+# --------------------
+# Test / Coverage
+# --------------------
+.coverage
+.pytest_cache/
+htmlcov/
