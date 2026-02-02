@@ -4,18 +4,13 @@ from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from prettytable import PrettyTable
-
-# Senin mevcut importların
 from core.session import AWSSessionManager
 from core.logging import get_logger
 from utils.config import REGION_LOCATION_MAP
 
-# Logger
 logger = get_logger("Collector_ec2", "INFO")
 
-# ---------------------------------------------------------
-# MODELS
-# ---------------------------------------------------------
+
 @dataclass
 class ResourceInfo:
     service: str
@@ -38,18 +33,12 @@ class ResourceInfo:
             "status": self.status,
             "meta": self.meta
         }
-
-# ---------------------------------------------------------
-# COLLECTORS
-# ---------------------------------------------------------
 class EC2RegionCollector:
-    """Tek bir bölgedeki (Region) EC2, EBS, Snapshot ve EIP'leri tarar."""
     
     def __init__(self, session_manager: AWSSessionManager):
         self.session_manager = session_manager
 
     def collect(self, region: str) -> List[ResourceInfo]:
-        """Bu bölge için tüm taramaları tetikler."""
         findings = []
         try:
             ec2_client = self.session_manager.get_client("ec2", region)
@@ -74,7 +63,6 @@ class EC2RegionCollector:
             for page in paginator.paginate():
                 for reservation in page["Reservations"]:
                     for instance in reservation["Instances"]:
-                        # Name tag'ini bul
                         name = "N/A"
                         for tag in instance.get("Tags", []):
                             if tag["Key"] == "Name":
@@ -96,7 +84,6 @@ class EC2RegionCollector:
         return findings
 
     def _scan_volumes(self, ec2, region) -> List[ResourceInfo]:
-        """Tüm EBS volumes (attached olanlar dahil)"""
         findings = []
         try:
             paginator = ec2.get_paginator("describe_volumes")
@@ -127,7 +114,6 @@ class EC2RegionCollector:
         return findings
 
     def _scan_orphan_volumes(self, ec2, region) -> List[ResourceInfo]:
-        """Orphan (bağlı olmayan) EBS volumes"""
         findings = []
         try:
             paginator = ec2.get_paginator("describe_volumes")
@@ -180,7 +166,6 @@ class EC2RegionCollector:
         return findings
 
     def _scan_eips(self, ec2, region) -> List[ResourceInfo]:
-        """Tüm Elastic IP'ler (detached olanlar dahil)"""
         findings = []
         try:
             response = ec2.describe_addresses()
@@ -208,16 +193,12 @@ class EC2RegionCollector:
             logger.error(f"EIP scan error in {region}: {e}")
         return findings
 
-# ---------------------------------------------------------
-# MANAGER
-# ---------------------------------------------------------
 class ResourceInventoryManager:
     def __init__(self, max_workers=10):
         self.session_manager = AWSSessionManager.get_instance()
         self.max_workers = max_workers
 
     def get_regions(self) -> List[str]:
-        """Aktif bölgeleri listeler."""
         try:
             ec2 = self.session_manager.get_client("ec2", "us-east-1")
             response = ec2.describe_regions(AllRegions=False)
@@ -226,7 +207,7 @@ class ResourceInventoryManager:
                 if r["OptInStatus"] in ["opt-in-not-required", "opted-in"]
             ]
         except Exception as e:
-            logger.error(f"Region listesi alınamadı: {e}")
+            logger.error(f"Region list could not be retrieved.: {e}")
             return ["us-east-1"]
 
     def run(self, target_region: str = None) -> List[Dict]:
@@ -249,17 +230,15 @@ class ResourceInventoryManager:
                     region = future_to_region[future]
                     logger.error(f"Region {region} taranırken hata: {e}")
 
-        print("\n")  # Scanning mesajından sonra yeni satır
+        print("\n")  
         logger.info("Scan completed.")
         return all_findings
 
     def display_results(self, findings: List[Dict]):
-        """Sonuçları PrettyTable ile göster"""
         if not findings:
-            print("\n❌ No resources found!")
+            print("\n No resources found!")
             return
 
-        # Service tipine göre grupla
         services = {}
         for finding in findings:
             service = finding["service"]
@@ -267,7 +246,6 @@ class ResourceInventoryManager:
                 services[service] = []
             services[service].append(finding)
 
-        # Her service tipi için tablo oluştur
         for service, items in services.items():
             print(f"\n{'='*100}")
             print(f"  {service.upper()} RESOURCES ({len(items)} items)")
@@ -290,7 +268,7 @@ class ResourceInventoryManager:
             
             print(table)
 
-        # Özet
+        
         print(f"\n{'='*100}")
         print(f"  SUMMARY")
         print(f"{'='*100}")
@@ -304,9 +282,6 @@ class ResourceInventoryManager:
         print(summary_table)
         print(f"\nTotal Resources: {len(findings)}")
 
-# ---------------------------------------------------------
-# EXECUTOR
-# ---------------------------------------------------------
 def run(region=None):
     manager = ResourceInventoryManager()
     findings = manager.run(region)
@@ -314,5 +289,4 @@ def run(region=None):
     return findings
 
 if __name__ == "__main__":
-    run()  # Tüm regionlar için
-    # run('us-east-1')  # Sadece belirli bir region için
+    run() 
