@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from prettytable import PrettyTable
 
 from core.session import AWSSessionManager
@@ -112,7 +112,7 @@ class NATGatewayCollector:
 
     def _get_traffic_metrics(self, cw, nat_gw_id: str, days: int = 30) -> float:
         try:
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(days=days)
 
             total_bytes = 0
@@ -157,8 +157,10 @@ class NATGatewayInventoryManager:
             logger.error(f"Region list could not be retrieved.: {e}")
             return ["us-east-1"]
 
-    def run(self, target_region: str = None) -> List[Dict]:
+    def run(self, target_region: Optional[str] = None) -> List[Dict]:
+
         regions = [target_region] if target_region else self.get_regions()
+
         collector = NATGatewayCollector(self.session_manager)
         all_findings = []
 
