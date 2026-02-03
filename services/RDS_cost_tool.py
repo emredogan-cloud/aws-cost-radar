@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from collections import defaultdict
 from botocore.exceptions import ClientError
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    from prettytable import PrettyTable
+except ImportError:
+    print("ERROR: 'prettytable' module not found. Install with: pip install prettytable")
+    sys.exit(1)
 
 try:
     from core.logging import get_logger
@@ -16,15 +23,17 @@ except ImportError:
 
 @dataclass
 class RDSConfig:
-    region: str = os.getenv('AWS_REGION', 'us-east-1')
+    regions: List[str] = field(default_factory=lambda: ['us-east-1'])
     include_clusters: bool = True
     include_snapshots: bool = True
     include_reserved: bool = True
     include_proxies: bool = True
+    max_workers: int = 5
 
 
 @dataclass
 class CostItem:
+    region: str
     resource_type: str
     resource_id: str
     status: str
@@ -38,26 +47,27 @@ class CostItem:
     additional_info: Dict = field(default_factory=dict)
     is_orphan: bool = False
 
-    def __str__(self):
-        return (f"{self.resource_type:20} | {self.resource_id:40} | "
-                f"Status: {self.status:15} | Size: {self.size_gb:8.2f}GB")
 
-
-class RDSCostAuditor:
-    def __init__(self, config: RDSConfig):
+class RegionRDSAuditor:
+    
+    def __init__(self, region: str, config: RDSConfig):
+        self.region = region
         self.config = config
-        self.logger = get_logger('RDS_Cost_Auditor', 'INFO')
+        self.logger = get_logger(f'RDS_Auditor_{region}', 'ERROR')
         session_mgr = AWSSessionManager.get_instance()
-        self.client = session_mgr.get_client('rds', region=config.region)
+        self.client = session_mgr.get_client('rds', region=region)
         self.cost_items: List[CostItem] = []
         self.active_instances: Set[str] = set()
         self.active_clusters: Set[str] = set()
+        self.stats = {
+            'db_instances': 0,
+            'clusters': 0,
+            'manual_snapshots': 0,
+            'automated_snapshots': 0,
+            'cluster_snapshots': 0
+        }
 
     def scan_db_instances(self) -> None:
-        self.logger.info("=" * 80)
-        self.logger.info("SCANNING RDS DB INSTANCES...")
-        self.logger.info("=" * 80)
-
         try:
             paginator = self.client.get_paginator('describe_db_instances')
             instance_count = 0
@@ -79,6 +89,7 @@ class RDSCostAuditor:
                     self.active_instances.add(db_id)
 
                     cost_item = CostItem(
+                        region=self.region,
                         resource_type="DB Instance",
                         resource_id=db_id,
                         status=status,
@@ -99,26 +110,15 @@ class RDSCostAuditor:
 
                     self.cost_items.append(cost_item)
 
-                    self.logger.info(
-                        f"  Instance: {db_id:40} | Class: {instance_class:15} | "
-                        f"Engine: {engine:12} | Status: {status:15} | "
-                        f"Storage: {allocated_storage}GB ({storage_type})" +
-                        (f" | IOPS: {iops}" if iops else "") +
-                        (f" | Multi-AZ" if multi_az else "")
-                    )
-
-            self.logger.info(f"\n✓ Found {instance_count} DB Instances.\n")
+            self.stats['db_instances'] = instance_count
 
         except ClientError as e:
-            self.logger.error(f"Instance scan error: {e}")
+            if e.response['Error']['Code'] != 'RequestExpired':
+                self.logger.error(f"[{self.region}] Instance scan error: {e}")
 
     def scan_db_clusters(self) -> None:
         if not self.config.include_clusters:
             return
-
-        self.logger.info("=" * 80)
-        self.logger.info("SCANNING AURORA CLUSTERS...")
-        self.logger.info("=" * 80)
 
         try:
             paginator = self.client.get_paginator('describe_db_clusters')
@@ -141,6 +141,7 @@ class RDSCostAuditor:
                     self.active_clusters.add(cluster_id)
 
                     cost_item = CostItem(
+                        region=self.region,
                         resource_type="Aurora Cluster",
                         resource_id=cluster_id,
                         status=status,
@@ -158,37 +159,23 @@ class RDSCostAuditor:
 
                     self.cost_items.append(cost_item)
 
-                    self.logger.info(
-                        f"  Cluster: {cluster_id:40} | Engine: {engine:12} | "
-                        f"Status: {status:15} | Members: {member_count} | "
-                        f"Storage: {allocated_storage}GB" +
-                        (f" | Multi-AZ" if multi_az else "")
-                    )
-
-            self.logger.info(f"\n✓ Found {cluster_count} Aurora Clusters.\n")
+            self.stats['clusters'] = cluster_count
 
         except ClientError as e:
-            self.logger.error(f"Cluster scan error: {e}")
+            if e.response['Error']['Code'] != 'RequestExpired':
+                self.logger.error(f"[{self.region}] Cluster scan error: {e}")
 
     def scan_snapshots(self) -> None:
         if not self.config.include_snapshots:
             return
 
-        self.logger.info("=" * 80)
-        self.logger.info("SCANNING DB SNAPSHOTS...")
-        self.logger.info("=" * 80)
-
-        snapshot_types = ['manual', 'automated']
         safe_list = self.active_instances.union(self.active_clusters)
 
+        snapshot_types = ['manual', 'automated']
         for snap_type in snapshot_types:
-            self.logger.info(f"\n--- {snap_type.upper()} Snapshots ---")
-
             try:
                 paginator = self.client.get_paginator('describe_db_snapshots')
                 snapshot_count = 0
-                orphan_count = 0
-                total_orphan_size = 0.0
 
                 for page in paginator.paginate(SnapshotType=snap_type):
                     for snapshot in page['DBSnapshots']:
@@ -204,11 +191,8 @@ class RDSCostAuditor:
 
                         is_orphan = instance_id not in safe_list
 
-                        if is_orphan:
-                            orphan_count += 1
-                            total_orphan_size += size
-
                         cost_item = CostItem(
+                            region=self.region,
                             resource_type=f"Snapshot ({snap_type})",
                             resource_id=snap_id,
                             status=status,
@@ -224,96 +208,221 @@ class RDSCostAuditor:
 
                         self.cost_items.append(cost_item)
 
-                        orphan_marker = " [ORPHAN!]" if is_orphan else ""
-                        self.logger.info(
-                            f"  Snapshot: {snap_id:50} | Source: {instance_id:30} | "
-                            f"Size: {size:6}GB | Status: {status:12}{orphan_marker}"
-                        )
-
-                self.logger.info(
-                    f"\n✓ {snap_type.upper()}: Found {snapshot_count} snapshots "
-                    f"({orphan_count} orphan, {total_orphan_size}GB)\n"
-                )
+                if snap_type == 'manual':
+                    self.stats['manual_snapshots'] = snapshot_count
+                else:
+                    self.stats['automated_snapshots'] = snapshot_count
 
             except ClientError as e:
-                self.logger.error(f"Snapshot scan error ({snap_type}): {e}")
+                if e.response['Error']['Code'] != 'RequestExpired':
+                    self.logger.error(f"[{self.region}] Snapshot scan error ({snap_type}): {e}")
 
-    def generate_summary_report(self) -> None:
-        self.logger.info("=" * 80)
-        self.logger.info("COST REPORT SUMMARY")
-        self.logger.info("=" * 80)
+        try:
+            paginator = self.client.get_paginator('describe_db_cluster_snapshots')
+            cluster_snapshot_count = 0
+
+            for page in paginator.paginate():
+                for snapshot in page['DBClusterSnapshots']:
+                    cluster_snapshot_count += 1
+
+                    snap_id = snapshot.get('DBClusterSnapshotIdentifier')
+                    cluster_id = snapshot.get('DBClusterIdentifier')
+                    size = snapshot.get('AllocatedStorage', 0)
+                    engine = snapshot.get('Engine', 'N/A')
+                    status = snapshot.get('Status', 'N/A')
+                    encrypted = snapshot.get('StorageEncrypted', False)
+                    create_time = snapshot.get('SnapshotCreateTime')
+                    snap_type = snapshot.get('SnapshotType', 'manual')
+
+                    is_orphan = cluster_id not in safe_list
+
+                    cost_item = CostItem(
+                        region=self.region,
+                        resource_type=f"Cluster Snapshot ({snap_type})",
+                        resource_id=snap_id,
+                        status=status,
+                        size_gb=float(size),
+                        engine=engine,
+                        encrypted=encrypted,
+                        is_orphan=is_orphan,
+                        additional_info={
+                            'source_cluster': cluster_id,
+                            'create_time': str(create_time) if create_time else 'N/A'
+                        }
+                    )
+
+                    self.cost_items.append(cost_item)
+
+            self.stats['cluster_snapshots'] = cluster_snapshot_count
+
+        except ClientError as e:
+            if e.response['Error']['Code'] != 'RequestExpired':
+                self.logger.error(f"[{self.region}] Cluster snapshot scan error: {e}")
+
+    def run_audit(self) -> tuple[List[CostItem], Dict]:
+        self.scan_db_instances()
+        self.scan_db_clusters()
+        self.scan_snapshots()
+        
+        return self.cost_items, self.stats
+
+
+class MultiRegionRDSCostAuditor:
+    
+    def __init__(self, config: RDSConfig):
+        self.config = config
+        self.logger = get_logger('MultiRegion_RDS_Auditor', 'ERROR')
+        self.all_cost_items: List[CostItem] = []
+        self.region_stats: Dict[str, Dict] = {}
+
+    def scan_region(self, region: str) -> tuple[List[CostItem], Dict]:
+        try:
+            auditor = RegionRDSAuditor(region, self.config)
+            return auditor.run_audit()
+        except Exception as e:
+            self.logger.error(f"Error scanning region {region}: {e}")
+            return [], {}
+
+    def run_parallel_audit(self):
+        print(f"\n{'═' * 80}")
+        print(f"{'RDS MULTI-REGION COST AUDIT':^80}")
+        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S'):^80}")
+        print(f"{'═' * 80}\n")
+
+        completed_regions = 0
+        total_regions = len(self.config.regions)
+
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            future_to_region = {
+                executor.submit(self.scan_region, region): region 
+                for region in self.config.regions
+            }
+
+            for future in as_completed(future_to_region):
+                region = future_to_region[future]
+                completed_regions += 1
+
+                try:
+                    cost_items, stats = future.result()
+                    self.all_cost_items.extend(cost_items)
+                    self.region_stats[region] = stats
+                    
+                    total_snaps = stats.get('manual_snapshots', 0) + stats.get('automated_snapshots', 0) + stats.get('cluster_snapshots', 0)
+                    print(f"\r[{completed_regions:2d}/{total_regions:2d}] {region:18} → "
+                          f"Inst:{stats.get('db_instances', 0):3d} | "
+                          f"Clus:{stats.get('clusters', 0):3d} | "
+                          f"Snap:{total_snaps:4d}", end="", flush=True)
+                    
+                except Exception as e:
+                    print(f"\r[{completed_regions:2d}/{total_regions:2d}] {region:18} → ERROR", end="", flush=True)
+
+        print("\n")
+        self.display_summary_tables()
+
+    def display_summary_tables(self) -> None:
+        
+        region_table = PrettyTable()
+        region_table.field_names = ["Region", "Instances", "Clusters", "Man.Snap", "Auto.Snap", "Clus.Snap", "Total", "Storage (GB)"]
+        region_table.align["Region"] = "l"
+        for field in region_table.field_names[1:]:
+            region_table.align[field] = "r"
+
+        by_region = defaultdict(list)
+        for item in self.all_cost_items:
+            by_region[item.region].append(item)
+
+        for region in sorted(by_region.keys()):
+            items = by_region[region]
+            stats = self.region_stats.get(region, {})
+            total_size = sum(item.size_gb for item in items)
+            
+            region_table.add_row([
+                region,
+                stats.get('db_instances', 0),
+                stats.get('clusters', 0),
+                stats.get('manual_snapshots', 0),
+                stats.get('automated_snapshots', 0),
+                stats.get('cluster_snapshots', 0),
+                len(items),
+                f"{total_size:.2f}"
+            ])
+
+        print(f"\n{'SUMMARY BY REGION':^80}")
+        print(region_table)
+
+        type_table = PrettyTable()
+        type_table.field_names = ["Resource Type", "Count", "Storage (GB)", "Orphans", "Orphan (GB)"]
+        type_table.align["Resource Type"] = "l"
+        for field in type_table.field_names[1:]:
+            type_table.align[field] = "r"
 
         by_type = defaultdict(list)
-        for item in self.cost_items:
+        for item in self.all_cost_items:
             by_type[item.resource_type].append(item)
-
-        total_storage = 0.0
-        orphan_storage = 0.0
 
         for resource_type in sorted(by_type.keys()):
             items = by_type[resource_type]
-            count = len(items)
             total_size = sum(item.size_gb for item in items)
             orphan_count = sum(1 for item in items if item.is_orphan)
             orphan_size = sum(item.size_gb for item in items if item.is_orphan)
 
-            total_storage += total_size
-            orphan_storage += orphan_size
+            type_table.add_row([
+                resource_type,
+                len(items),
+                f"{total_size:.2f}",
+                orphan_count if orphan_count > 0 else "-",
+                f"{orphan_size:.2f}" if orphan_size > 0 else "-"
+            ])
 
-            self.logger.info(
-                f"\n{resource_type}:"
-                f"\n  Total Resources: {count}"
-                f"\n  Total Storage: {total_size:.2f} GB"
-            )
+        print(f"\n{'SUMMARY BY RESOURCE TYPE':^80}")
+        print(type_table)
 
-            if orphan_count > 0:
-                self.logger.warning(
-                    f"    ORPHAN Resources: {orphan_count}"
-                    f"\n    ORPHAN Storage: {orphan_size:.2f} GB"
-                )
+        total_storage = sum(item.size_gb for item in self.all_cost_items)
+        orphan_count_total = sum(1 for item in self.all_cost_items if item.is_orphan)
+        orphan_storage = sum(item.size_gb for item in self.all_cost_items if item.is_orphan)
 
-        self.logger.info("\n" + "=" * 80)
-        self.logger.info("OVERALL SUMMARY:")
-        self.logger.info(f"  Total Resources: {len(self.cost_items)}")
-        self.logger.info(f"  Total Storage: {total_storage:.2f} GB")
+        summary_table = PrettyTable()
+        summary_table.field_names = ["Metric", "Value"]
+        summary_table.align["Metric"] = "l"
+        summary_table.align["Value"] = "r"
+        summary_table.add_row(["Total Regions", len(by_region)])
+        summary_table.add_row(["Total Resources", len(self.all_cost_items)])
+        summary_table.add_row(["Total Storage", f"{total_storage:.2f} GB"])
+        summary_table.add_row(["Orphan Resources", orphan_count_total])
+        summary_table.add_row(["Orphan Storage", f"{orphan_storage:.2f} GB"])
 
-        orphan_count_total = sum(1 for item in self.cost_items if item.is_orphan)
+        print(f"\n{'OVERALL SUMMARY':^80}")
+        print(summary_table)
+
         if orphan_count_total > 0:
-            self.logger.warning(
-                f"\n    TOTAL ORPHAN RESOURCES: {orphan_count_total}"
-                f"\n    TOTAL ORPHAN STORAGE: {orphan_storage:.2f} GB"
-                f"\n   RECOMMENDATION: Remove orphan resources to save cost!"
-            )
-        else:
-            self.logger.info("\n  ✓ No orphan resources found.")
-
-        self.logger.info("=" * 80)
-
-    def run_audit(self):
-        self.logger.info("\n\n")
-        self.logger.info("╔" + "═" * 78 + "╗")
-        self.logger.info("║" + " " * 22 + "RDS COST AUDIT STARTING" + " " * 28 + "║")
-        self.logger.info("║" + f" Region: {self.config.region:67} ║")
-        self.logger.info("║" + f" Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S'):69}║")
-        self.logger.info("╚" + "═" * 78 + "╝")
-        self.logger.info("\n")
-
-        self.scan_db_instances()
-        self.scan_db_clusters()
-        self.scan_snapshots()
-        self.generate_summary_report()
-
-        self.logger.info("\n✓ RDS Cost Audit completed!\n")
+            print(f"\n{'⚠ WARNING ⚠':^80}")
+            print(f"{orphan_count_total} orphan resources consuming {orphan_storage:.2f} GB".center(80))
+            print(f"{'Consider removing to reduce costs':^80}\n")
+        
+        print(f"{'═' * 80}\n")
 
 
 if __name__ == '__main__':
+    regions_env = os.getenv('AWS_REGIONS', '')
+    
+    if regions_env == 'ALL':
+        session_mgr = AWSSessionManager.get_instance()
+        ec2_client = session_mgr.get_client('ec2', region='us-east-1')
+        response = ec2_client.describe_regions()
+        regions = [region['RegionName'] for region in response['Regions']]
+    elif regions_env:
+        regions = [r.strip() for r in regions_env.split(',')]
+    else:
+        regions = []
+
     config = RDSConfig(
-        region=os.getenv('AWS_REGION', 'us-east-1'),
+        regions=regions,
         include_clusters=True,
         include_snapshots=True,
         include_reserved=True,
-        include_proxies=True
+        include_proxies=True,
+        max_workers=int(os.getenv('MAX_WORKERS', '5'))
     )
 
-    auditor = RDSCostAuditor(config)
-    auditor.run_audit()
+    auditor = MultiRegionRDSCostAuditor(config)
+    auditor.run_parallel_audit()
