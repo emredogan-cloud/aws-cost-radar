@@ -190,6 +190,8 @@ class RegionRDSAuditor:
                         create_time = snapshot.get('SnapshotCreateTime')
 
                         is_orphan = instance_id not in safe_list
+                        if not snap_id:
+                            continue
 
                         cost_item = CostItem(
                             region=self.region,
@@ -235,6 +237,9 @@ class RegionRDSAuditor:
                     snap_type = snapshot.get('SnapshotType', 'manual')
 
                     is_orphan = cluster_id not in safe_list
+
+                    if not snap_id:
+                        continue
 
                     cost_item = CostItem(
                         region=self.region,

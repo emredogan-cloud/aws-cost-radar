@@ -254,6 +254,10 @@ class NATGatewayInventoryManager:
 
 def run(region=None):
     manager = NATGatewayInventoryManager()
+
+    if not region:
+        return
+
     findings = manager.run(region)
     manager.display_results(findings)
     return findings
