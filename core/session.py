@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING, overload, Literal
 if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
     from mypy_boto3_rds import RDSClient
+    from mypy_boto3_cloudwatch import CloudWatchClient
 
-AWSService = Literal['ec2', 'rds']
+AWSService = Literal['ec2', 'rds','cloudwatch']
 
 class AWSSessionManager:
     _instance = None
@@ -31,6 +32,10 @@ class AWSSessionManager:
 
     @overload
     def get_client(self, service_name: Literal['rds'], region: str = "us-east-1") -> "RDSClient": ...
+
+
+    @overload
+    def get_client(self, service_name: Literal['cloudwatch'], region: str = "us-east-1") -> "CloudWatchClient": ...
 
     def get_client(self, service_name: AWSService, region: str = "us-east-1"):
         session = self.get_session(region)
