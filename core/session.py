@@ -6,8 +6,9 @@ if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
     from mypy_boto3_rds import RDSClient
     from mypy_boto3_cloudwatch import CloudWatchClient
+    from mypy_boto3_kms import KMSClient
 
-AWSService = Literal['ec2', 'rds','cloudwatch']
+AWSService = Literal['ec2', 'rds','cloudwatch' , 'kms']
 
 class AWSSessionManager:
     _instance = None
@@ -36,6 +37,9 @@ class AWSSessionManager:
 
     @overload
     def get_client(self, service_name: Literal['cloudwatch'], region: str = "us-east-1") -> "CloudWatchClient": ...
+
+    @overload
+    def get_client(self, service_name: Literal['kms'], region: str = "us-east-1") -> "KMSClient": ...
 
     def get_client(self, service_name: AWSService, region: str = "us-east-1"):
         session = self.get_session(region)
