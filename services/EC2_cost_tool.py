@@ -210,8 +210,10 @@ class ResourceInventoryManager:
             logger.error(f"Region list could not be retrieved.: {e}")
             return ["us-east-1"]
 
-    def run(self, target_region: str = None) -> List[Dict]:
+    def run(self, target_region: Optional[str] = None) -> List[Dict]:
         regions = [target_region] if target_region else self.get_regions()
+
+
         collector = EC2RegionCollector(self.session_manager)
         all_findings = []
 
