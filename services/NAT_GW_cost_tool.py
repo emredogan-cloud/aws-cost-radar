@@ -86,7 +86,7 @@ class NATGatewayCollector:
                 is_zombie = False
                 if nat_gw.get('CreateTime'):
                     created_at = nat_gw['CreateTime'].replace(tzinfo=None)
-                    running_hours = (datetime.utcnow() - created_at).total_seconds() / 3600
+                    running_hours = (datetime.now(timezone.utc) - created_at).total_seconds() / 3600
                     is_zombie = running_hours > 24 and traffic_gb < 1.0
                 
                 findings.append(NATGatewayInfo(
