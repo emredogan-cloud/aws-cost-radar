@@ -1,20 +1,24 @@
 # AWS Cost Radar
 
-A multi-region **AWS resource inventory & “hidden cost” auditor** built with **boto3**.  
-It helps you quickly spot **cost-incurring / forgotten resources** across regions (e.g., orphan EBS volumes, snapshots, idle NAT Gateways) and prints a clean CLI summary using **PrettyTable**.
+A multi-region **AWS resource inventory & “hidden cost” auditor** built with **boto3**.
 
-> ✅ **Safe by default:** this project **does not delete** anything — it only reads and reports.
+It helps you quickly spot **cost-incurring / forgotten resources** across regions (e.g., orphan EBS volumes, snapshot sprawl, idle NAT Gateways) and produces:
+
+- a clean **CLI table** (PrettyTable)
+- **CSV + JSON reports** under `./reports/`
+
+> ✅ **Safe by default:** this project is **read-only** — it does not delete or modify resources.
 
 ---
 
-## What it scans (current modules)
+## What it scans (current coverage)
 
-| Module | Finds / Reports | “Cost signal” examples |
+| Area | What it finds | Common “cost signal” |
 |---|---|---|
-| `EC2_cost_tool` | EC2 instances, EBS volumes (in-use + orphan), EBS snapshots, Elastic IPs | Orphan volumes, detached EIPs, snapshot sprawl |
-| `NAT_GW_cost_tool` | NAT Gateways + CloudWatch traffic (last 30 days) | Flags **low-traffic NAT Gateways** as “zombie” candidates |
-| `RDS_cost_tool` | RDS instances, Aurora clusters, RDS snapshots (manual/automated), cluster snapshots | Detects **orphan snapshots** (snapshot exists but source DB/cluster not found) |
-| `KMS_cost_tool` | KMS keys + rotation status applicability | Highlights keys where rotation is **disabled / not applicable** |
+| EC2 / EBS | Instances, EBS volumes (in-use + **orphan**), EBS snapshots, Elastic IPs | Orphan volumes, detached EIPs, snapshot sprawl |
+| NAT Gateway | NAT Gateways + CloudWatch traffic (last 30 days) | **Low-traffic NAT** = “zombie” candidate |
+| RDS | RDS instances, Aurora clusters, DB/cluster snapshots | **Orphan snapshots** (snapshot exists, source DB/cluster not found) |
+| KMS | KMS keys + rotation applicability/status | Rotation disabled / not applicable signals |
 
 ---
 
@@ -22,36 +26,46 @@ It helps you quickly spot **cost-incurring / forgotten resources** across region
 
 ```text
 aws-cost-radar/
+├─ main.py                 # ✅ main entrypoint (runs scans + exports reports)
 ├─ core/
-│  ├─ session.py        # boto3 Session + typed client factory (singleton)
-│  └─ logging.py        # consistent log format
+│  ├─ session.py           # boto3 Session + typed client factory (singleton)
+│  └─ logging.py           # consistent log format
 ├─ services/
 │  ├─ EC2_cost_tool.py
 │  ├─ NAT_GW_cost_tool.py
 │  ├─ RDS_cost_tool.py
 │  └─ KMS_cost_tool.py
-└─ utils/
-   └─ config.py         # region → pricing “location” mapping (for future Pricing API)
+├─ utils/
+│  └─ config.py
+└─ reports/                # ✅ generated outputs (CSV + JSON)
 ```
+
+> Tip: It’s best to add `reports/` to `.gitignore` so you don’t commit generated files.
 
 ---
 
 ## Requirements
 
-- Python **3.10+** (tested with 3.12)
+- Python **3.10+** (works great on 3.12)
 - AWS credentials available via one of these:
-  - `AWS_PROFILE=...` (recommended)
+  - **AWS_PROFILE** (recommended)
   - environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
   - AWS SSO (via AWS CLI)
   - IAM Role (EC2/ECS/Lambda)
 
-### Install dependencies
+---
+
+## Install
 
 ```bash
+git clone https://github.com/emredogan-cloud/aws-cost-radar.git
+cd aws-cost-radar
+
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install boto3 botocore prettytable
+
+pip install boto3 botocore prettytable python-dotenv
 ```
 
 > Optional (type hints only):  
@@ -61,59 +75,75 @@ pip install boto3 botocore prettytable
 
 ## Quick start
 
-From the repo root:
+### Run everything (recommended)
 
-### 1) EC2 / EBS / Snapshot / EIP inventory (multi-region)
+```bash
+python3 main.py
+```
+
+This will:
+- scan supported services across regions (depending on your configuration)
+- print CLI tables
+- write **CSV + JSON** files into `./reports/`
+
+### Run a single module (debug / dev)
 
 ```bash
 python -m services.EC2_cost_tool
-```
-
-### 2) NAT Gateway audit (multi-region + traffic)
-
-```bash
 python -m services.NAT_GW_cost_tool
-```
-
-### 3) RDS audit (controlled by env vars)
-
-You can control regions and worker count:
-
-```bash
-# Scan specific regions
-export AWS_REGIONS="eu-central-1,us-east-1"
-export MAX_WORKERS="5"
 python -m services.RDS_cost_tool
-```
-
-Scan **all** regions:
-
-```bash
-export AWS_REGIONS="ALL"
-python -m services.RDS_cost_tool
-```
-
-### 4) KMS rotation audit (multi-region)
-
-```bash
 python -m services.KMS_cost_tool
 ```
 
 ---
 
-## Output examples (what you’ll see)
+## Reports (CSV + JSON)
 
-- **PrettyTable** grouped by resource type (EC2/EBS/Snapshots/EIPs)
-- **NAT Gateway table** with:
-  - Region, NAT ID, VPC/Subnet, State, Public IP
-  - **Traffic (GB)** last 30 days
-  - **Status** (“ZOMBIE” candidate when traffic is very low)
-- **RDS summaries**:
-  - By region: instances/clusters/snapshots + total storage (GB)
-  - By resource type: count + orphan counts
-  - Overall summary + orphan warning
-- **KMS table**:
-  - Key manager (AWS vs Customer), state, rotation status and reason
+All outputs are written under:
+
+```text
+./reports/
+```
+
+Typical files include:
+- `*.csv` (easy to open in Excel / Google Sheets)
+- `*.json` (automation / post-processing friendly)
+
+If you want to keep the repo clean:
+
+```bash
+echo "reports/" >> .gitignore
+```
+
+---
+
+## Configuration
+
+### Regions (RDS module)
+
+The RDS module supports environment configuration:
+
+```bash
+# Scan specific regions
+export AWS_REGIONS="eu-central-1,us-east-1"
+
+# Or scan all regions
+export AWS_REGIONS="ALL"
+
+# Thread count (default: 5)
+export MAX_WORKERS="5"
+
+python -m services.RDS_cost_tool
+```
+
+### Credentials (recommended)
+
+Use profiles:
+
+```bash
+export AWS_PROFILE="your-profile"
+python3 main.py
+```
 
 ---
 
@@ -121,11 +151,10 @@ python -m services.KMS_cost_tool
 
 This project uses **read-only** calls.
 
-Suggested approach:
-- Attach **AWS managed policy**: `ReadOnlyAccess` for easiest setup (lab/learning).
-- For production: create a tight policy for only what you need.
+Easiest for learning/lab:
+- AWS managed policy: `ReadOnlyAccess`
 
-High-level API coverage:
+Minimal API coverage (high level):
 - EC2: `DescribeInstances`, `DescribeVolumes`, `DescribeSnapshots`, `DescribeAddresses`, `DescribeRegions`
 - CloudWatch: `GetMetricStatistics`
 - RDS: `DescribeDBInstances`, `DescribeDBClusters`, `DescribeDBSnapshots`, `DescribeDBClusterSnapshots`
@@ -135,10 +164,13 @@ High-level API coverage:
 
 ## Notes & limitations
 
-- “Cost Radar” is currently **inventory + cost signals**.  
-  It does **not** calculate exact monthly USD cost yet (Pricing API integration is a natural next step).
-- CloudWatch NAT metrics can be missing or delayed in some accounts/regions.
-- Large accounts may hit API throttling; if so, reduce worker count in modules that support it.
+- “Cost Radar” currently focuses on **inventory + cost signals**.  
+  Exact USD/month calculation (Pricing API) can be added as a future enhancement.
+- Large accounts may hit API throttling. If you see throttling:
+  - lower worker count (where supported),
+  - prefer fewer regions,
+  - retry with backoff (future improvement).
+- NAT CloudWatch metrics can be missing/delayed in some regions.
 
 ---
 
@@ -146,25 +178,16 @@ High-level API coverage:
 
 If you want this to look *very strong* on a CV:
 
-1. **Single CLI entrypoint**
-   - `python -m aws_cost_radar scan --service ec2 --region eu-central-1 --format json`
-2. **Export formats**
-   - CSV / JSON output to `reports/`
-3. **Real cost estimation**
-   - AWS Pricing API integration (at least NAT hourly + data processing, EBS GB-month, snapshot GB-month, EIP when detached)
-4. **Tests**
-   - `pytest` + `moto` for basic flows
-5. **Quality gates**
-   - `ruff`, `black`, `mypy`, GitHub Actions CI
-6. **Docs**
-   - “How to interpret findings” + examples + sample outputs
-
----
-
-## Contributing
-
-PRs and issues are welcome.  
-If you’re using this project in a portfolio, please keep secrets out of git history (never commit `.env` or credentials).
+1. **Single CLI** (`argparse` / `typer`)
+   - `python main.py scan --service ec2 --regions ALL --format json`
+2. **Real cost estimation**
+   - Pricing API integration for EBS GB-month, snapshot GB-month, NAT hourly + processing, detached EIP, etc.
+3. **Tests**
+   - `pytest` + `moto` for collectors
+4. **CI**
+   - GitHub Actions + `ruff` + `mypy`
+5. **Docs**
+   - “How to interpret findings” + screenshots + sample reports
 
 ---
 
