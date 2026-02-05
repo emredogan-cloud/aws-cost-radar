@@ -190,10 +190,10 @@ class KMSCollector:
                         all_results.extend(findings) 
                     except ClientError as e:
                         error = e.response["Error"]["Code"]
-                        self.logger.error(f'ERROR: {error}')
+                        self.logger.error(f'AWS ERROR: {error}')
                         continue
                     except Exception as e:
-                        self.logger.error(f'ERROR: {e}')
+                        self.logger.error(f'ERROR..: {e}')
                         continue
 
                     for f in findings:
