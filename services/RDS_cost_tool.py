@@ -28,7 +28,7 @@ class RDSConfig:
     include_snapshots: bool = True
     include_reserved: bool = True
     include_proxies: bool = True
-    max_workers: int = 5
+    max_workers: int = 12
 
 
 @dataclass
@@ -320,7 +320,7 @@ class MultiRegionRDSCostAuditor:
                     
                 except Exception as e:
                     print(f"\r[{completed_regions:2d}/{total_regions:2d}] {region:18} → ERROR", end="", flush=True)
-
+            return self.all_cost_items
         print("\n")
         self.display_summary_tables()
 
