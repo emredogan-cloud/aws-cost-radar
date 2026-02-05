@@ -1,5 +1,7 @@
 # AWS Cost Radar
 
+[![aws-cost-radar CI](https://github.com/emredogan-cloud/aws-cost-radar/actions/workflows/main.yaml/badge.svg)](https://github.com/emredogan-cloud/aws-cost-radar/actions/workflows/main.yaml)
+
 A multi-region **AWS resource inventory & “hidden cost” auditor** built with **boto3**.
 
 It helps you quickly spot **cost-incurring / forgotten resources** across regions (e.g., orphan EBS volumes, snapshot sprawl, idle NAT Gateways) and produces:
