@@ -189,10 +189,11 @@ class KMSCollector:
                         findings = future.result()
                         all_results.extend(findings) 
                     except ClientError as e:
-                        
+                        error = e.response["Error"]["Code"]
+                        self.logger.error(f'ERROR: {error}')
                         continue
                     except Exception as e:
-                        
+                        self.logger.error(f'ERROR: {e}')
                         continue
 
                     for f in findings:
