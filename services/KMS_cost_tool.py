@@ -170,6 +170,7 @@ class KMSCollector:
 
         
     def run(self):
+        all_results = []  
         try:
             regions = self.get_regions()
             max_workers = 8
@@ -186,22 +187,12 @@ class KMSCollector:
 
                     try:
                         findings = future.result()
+                        all_results.extend(findings) 
                     except ClientError as e:
-                        code = e.response["Error"]["Code"]
-                        self.logger.error(f"Region {reg} scan failed: {code}")
-                        completed += 1
-                        print(
-                            f"Progress: {completed}/{len(regions)} | Last finished: {reg} (FAILED)\x1b[K",
-                            end="\r"
-                        )
+                        
                         continue
                     except Exception as e:
-                        self.logger.error(f"Region {reg} scan failed: {e}")
-                        completed += 1
-                        print(
-                            f"Progress: {completed}/{len(regions)} | Last finished: {reg} (FAILED)\x1b[K",
-                            end="\r"
-                        )
+                        
                         continue
 
                     for f in findings:
@@ -210,33 +201,26 @@ class KMSCollector:
                             else "DISABLED" if f.rotation_enabled is False
                             else "N/A"
                         )
-
                         self.table.add_row([
-                            f.region,
-                            f.alias,
-                            self._short(f.key_id),
-                            f.key_manager,
-                            f.key_state,
-                            rotation_display,
-                            f.rotation_reason
+                            f.region, f.alias, self._short(f.key_id),
+                            f.key_manager, f.key_state, rotation_display, f.rotation_reason
                         ])
 
                     completed += 1
-                    print(
-                        f"Progress: {completed}/{len(regions)} | Last finished: {reg}\x1b[K",
-                        end="\r"
-                    )
+                    print(f"Progress: {completed}/{len(regions)} | Last finished: {reg}\x1b[K", end="\r")
 
             print() 
             print(self.table)
+            return all_results 
 
         except KeyboardInterrupt:
             self.logger.warning("Script is Stopped...")
-        except ClientError as e:
-            code = e.response["Error"]["Code"]
-            self.logger.error(f"AWS ERROR: {code}")
+            return all_results
+        except Exception as e:
+            self.logger.error(f"Error: {e}")
+            return all_results
 
-
+        
 if __name__ == '__main__':
     kmscollect = KMSCollector()
     kmscollect.run()
