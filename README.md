@@ -176,7 +176,6 @@ Minimal API coverage (high level):
 
 ## Roadmap (recommended upgrades)
 
-If you want this to look *very strong* on a CV:
 
 1. **Single CLI** (`argparse` / `typer`)
    - `python main.py scan --service ec2 --regions ALL --format json`
