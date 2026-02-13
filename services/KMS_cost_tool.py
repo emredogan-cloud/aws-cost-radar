@@ -189,12 +189,12 @@ class KMSCollector:
                         findings = future.result()
                         all_results.extend(findings) 
                     except ClientError as e:
-                        error = e.response["Error"]["Code"]
-                        self.logger.error(f'AWS ERROR: {error}')
-                        continue
-                    except Exception as e:
-                        self.logger.error(f'ERROR..: {e}')
-                        continue
+                        self.logger.error(f'AWS ERROR: {e.response["Error"]["Code"]}')
+                    except (KeyError, TypeError) as e:
+                        self.logger.error(f'Data Processing Error in {reg}: {e}')
+                    except Exception:
+                        self.logger.exception(f'Unexpected error in region {reg}')
+                        raise
 
                     for f in findings:
                         rotation_display = (
